@@ -296,7 +296,7 @@ enable_nginx_lb: true
 load_balancer_is_required: true
 
 ```
-curl -H "Host: app.local" http://172.31.14.123/
+curl -H "Host: app.local" http://172.31.xx.xxx/
 
 8. Update the inventory file for the UAT environment (`inventory/uat.yml`):
 ```ini
@@ -486,10 +486,17 @@ Run the command multiple times to ensure requests reach the upstream backend ser
 SSH into the Nginx load balancer server and monitor traffic logs live:
 
 ```bash
+sudo tail -f /var/log/nginx/access.log
+```
+![screenshot](images/lb-live-log.png)
+
+SSH into the backend servers to monitor how the loadbalancer distributes traffic across them.
+
+```bash
 sudo tail -f /var/log/httpd/access_log
 
 ```
-![screenshot](images/40.png)
+![screenshot](images/webserver-live-log.png)
 
 ## Important Note
 To keep our automation clean, modular, and easy to maintain, we are encapsulating our load-balancer configuration into a dedicated custom role rather than modifying rigid community roles. By separating our core deployment logic from environment-specific variables and toggle flags, we ensure that a single, reusable codebase can seamlessly switch between Nginx and Apache depending on the active environment settings.
@@ -655,7 +662,8 @@ Update loadbalancers static assignment to include the environment file alongside
   ansible-playbook -i inventory/uat.ini playbooks/site.yml
   ```
 
-## Incident Report: Running Out of Disk Space During Ansible Deployment
+## Troubleshooting
+Running Out of Disk Space During Ansible Deployment
 While executing the Ansible playbook (playbooks/site.yml) against the UAT inventory, execution failed across all target nodes (Web1, Web2, load balancers, and database) due to an OSError: [Errno 28] No space left on device error. Running an ad-hoc Ansible disk utilization command (df -h) confirmed that disk space was fully exhausted, causing the playbook to crash repeatedly the exact moment execution started, even after temporary cleanups.
 ![screenshot](images/52.png)
 ![screenshot](images/53.png)
@@ -716,8 +724,10 @@ The `custom_lb_config` role is executed first so that its configuration and serv
 
 This is important because Nginx and Apache both use port 80 by default. If the previously active service is still running, the selected service may fail to start because the port is already occupied.
 
-**Issue encountered**
 
+## Troubleshooting 
+
+### Problem
 During the switch from Nginx to Apache, the playbook failed at:
 
 ```
@@ -729,12 +739,6 @@ Job for apache2.service failed because the control process exited with error cod
 ```
 
 ![screenshot](images/58.png)
-
-## Troubleshooting and Configuring Apache as a Load Balancer
-
-### Problem
-
-Apache failed to start after deploying the custom load-balancer configuration.
 
 To find why apache2 could not start, I ran some configuration check against the load balancer hosts:
 
@@ -833,3 +837,97 @@ cat /etc/apache2/conf-enabled/load-balancer.conf
 Resolved the Apache startup errors by enabling the required proxy modules and correcting the load-balancing method.
 
 Apache now starts successfully and is configured to distribute incoming HTTP requests across the defined backend web servers using the `byrequests` load-balancing method.
+# Project Improvements and Configuration Updates
+
+## 1. MySQL Credential Management and Authentication
+
+As part of improving the security and configuration of my project, I revisited how MySQL credentials were managed within the Ansible role.
+
+### Credential management with Ansible Vault
+
+I moved the MySQL root and application user credentials out of plaintext configuration and implemented Ansible Vault to protect them.
+
+The changes I made include:
+
+- Created `roles/mysql/vars/vault.yml` to store encrypted credentials.
+- Updated `roles/mysql/vars/main.yml` to reference Vault variables instead of hardcoded passwords.
+- Updated `docs.md` to remove plaintext credentials and use sanitized variable references.
+
+I also updated how I execute the playbook to supply the Vault password:
+
+```bash
+ansible-playbook -i inventory/uat.yml playbooks/site.yml --ask-vault-pass
+```
+![screenshot](images/vault-evidence.png)
+
+### Fixing MySQL root authentication
+
+While testing the changes, I encountered this authentication error:
+
+```text
+ERROR 1045 (28000): Access denied for user 'root'@'localhost' (using password: NO)
+```
+
+After investigating, I discovered that the Jinja2 template responsible for generating `/root/.my.cnf` was not including the root password because of its conditional logic.
+
+I corrected `roles/mysql/templates/root-my.cnf.j2` to explicitly include the password and socket configuration:
+
+```jinja2
+[client]    
+user="{{ mysql_root_username }}"
+password="{{ mysql_root_password }}"
+socket={{ mysql_socket }}
+```
+
+This resolved the mismatch between the generated client configuration and the password-based authentication required by the MySQL root account.
+
+### Files updated
+
+| File | What I changed |
+|---|---|
+| `roles/mysql/vars/vault.yml` | Added encrypted database credentials |
+| `roles/mysql/vars/main.yml` | Replaced hardcoded passwords with Vault references |
+| `roles/mysql/templates/root-my.cnf.j2` | Corrected root client authentication |
+| `docs.md` | Removed plaintext credentials |
+
+---
+
+## 2. Load Balancer Environment-Variable Path Correction
+
+### Changes Made
+I corrected the environment-variable path in `static-assignments/loadbalancers.yml`, changing it from `../envrs/uat.yml` to `../env-vars/uat.yml` to match the actual directory structure in the repository. This ensures the playbook uses the correct file when the project is cloned and run elsewhere.
+
+---
+
+## 3. Staging Dynamic-Variable Mapping Standardization
+
+### Changes Made
+I standardized the staging environment naming across the inventory file, environment-variable file in `env-vars/`, and the `with_first_found` sequence. I used `staging` as the consistent identifier, replacing the previous mismatch between `staging.ini` and `stage.yml`.
+
+This ensures that staging executions resolve and load the correct environment variables instead of potentially falling back to `dev.yml`. I also verified inventory resolution and playbook execution with the updated configuration.
+
+![screenshot](images/staging-renaming.png)
+
+---
+
+## 4. Database Play `vars_files` Cleanup (`db-servers.yml`)
+
+### Changes Made
+I removed the unnecessary `vars_files` reference to `vars/main.yml` from `db-servers.yml`. The MySQL role already manages its own variables, so the playbook no longer needs to reference an unrelated variable file.
+
+---
+
+## 5. Inventory Group and Host Naming Standardization
+
+### Changes Made
+I updated the UAT database inventory to use `[db_servers]` instead of `[db]`, aligning it with the database play's `hosts: db_servers` declaration. I also gave the database host a more descriptive name to make the inventory easier to understand and maintain.
+
+---
+
+## 6. Documentation Log Path and Command Alignment
+
+### Changes Made
+I corrected the Nginx log paths in `docs.md` to reflect the actual Nginx log locations, replacing the incorrect Apache log reference with `/var/log/nginx/access.log`. I kept Apache-specific log paths under the Apache verification section.
+
+![screenshot](images/lb-live-log.png)
+![screenshot](images/webserver-live-log.png)
