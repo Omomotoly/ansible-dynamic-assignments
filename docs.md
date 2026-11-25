@@ -931,3 +931,8 @@ I corrected the Nginx log paths in `docs.md` to reflect the actual Nginx log loc
 
 ![screenshot](images/lb-live-log.png)
 ![screenshot](images/webserver-live-log.png)
+
+---
+### 7. Evidence of Successful Run
+
+![screenshot](images/successful-play.png)
